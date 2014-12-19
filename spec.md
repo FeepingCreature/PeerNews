@@ -1,10 +1,10 @@
-# Copied from http://piratepad.net/CeTPAJl5LR
+- Copied from http://piratepad.net/CeTPAJl5LR
 
-== INTRODUCTION ==
+## INTRODUCTION
  
 PeerNews is a P2P distributed Reddit clone.
  
-== DESCRIPTION ==
+## DESCRIPTION
  
 A peer is a computer running the PeerNews software.
  
@@ -30,7 +30,7 @@ package is signed with the hoster's identity.
 Posts have the following actions: upvote, downvote, hide, delete, edit, [listen, believe, trust].
 The listen, believe and trust actions add an identity to the peer list with a given trust rating.
  
-== PROPOSED TECHNOLOGIES, INTERESTING READING ==
+## PROPOSED TECHNOLOGIES, INTERESTING READING
  
  * http://www.pjsip.org/pjnath/docs/html/ ?
  * https://en.gravatar.com/site/implement/hash/
@@ -42,7 +42,7 @@ The listen, believe and trust actions add an identity to the peer list with a gi
    * (like freenet)
  * oh btw, see also http://en.wikipedia.org/wiki/Syndie
  
-== UNFLESHED OUT IDEAS ==
+## UNFLESHED OUT IDEAS
  
 * Automatically subscribe (locally) to people you reply to (enables conversations)
 * Peer discovery! Figure out a way to find the current IP for a node. (Verify its signature when connecting! "Ping" - "Are you X" request)
@@ -65,7 +65,7 @@ The listen, believe and trust actions add an identity to the peer list with a gi
  * Central "random peers" server for opennet/bootstrapping?
  
  
-== RELEASE BLOCKERS ==
+## RELEASE BLOCKERS
  
 * NAT traversal
 * IP discovery (ask around?)
@@ -73,7 +73,7 @@ The listen, believe and trust actions add an identity to the peer list with a gi
     * (a peer that has no posts, just Identity/IP data?)
     * Special mode of peering? Necessary?
  
-== TASKS ==
+## TASKS
  
 - Discover public IP
  - Stub this: just load ifconfig.me
@@ -84,7 +84,7 @@ The listen, believe and trust actions add an identity to the peer list with a gi
  - find library?
 - http client
  
-== DATA STRUCTURE SKETCHES ETC ==
+## DATA STRUCTURE SKETCHES ETC
  
 Identity: Nickname, PubKey
  
