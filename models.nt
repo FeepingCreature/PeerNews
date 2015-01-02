@@ -1,0 +1,15 @@
+// Module: models
+// common data structures
+module models;
+
+struct SignedMessage {
+  string signature;
+  string message;
+}
+
+struct RegisterMe {
+  string nick;
+  string pk; // base64
+  string ip; // must match get-public-ip
+  string nonce; // must match previous request to get-nonce. only valid once.
+}

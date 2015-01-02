@@ -1,0 +1,28 @@
+module nonce;
+
+shared (type-of µsec(), string)[auto~] active_nonces;
+shared Mutex nonce_lock;
+void init() { nonce_lock = new Mutex; }
+
+string generateNonce() using LockedMutex:nonce_lock {
+  ubyte x 16 nonce;
+  import c.uuid.uuid;
+  pragma(lib, "uuid");
+  uuid_generate(char*:nonce.ptr);
+  string hash = std.hash.base64.encode nonce[];
+  active_nonces ~= (µsec(), hash);
+  return hash;
+}
+
+alias NONCE_TIME_VALID = 60 * 1_000_000;
+// TODO hashmap
+bool consumedValidNonce(string nonce) using LockedMutex:nonce_lock {
+  for ref pair <- active_nonces {
+    if (pair[1] == nonce) {
+      writeln "invalidate nonce, check time $(double:(µsec() - pair[0]) / 1_000_000.0)";
+      pair[1] = null; // invalidate
+      return (µsec() - pair[0]) < NONCE_TIME_VALID;
+    }
+  }
+  return false;
+}

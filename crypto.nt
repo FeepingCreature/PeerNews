@@ -1,0 +1,42 @@
+module crypto;
+
+import c.sodium, std.hash.base64, std.string;
+
+pragma(lib, "sodium");
+
+void init() { sodium_init; }
+
+class SignatureCrypto {
+  ubyte[] sk;
+  ubyte[] pk;
+  void init(ubyte[] pk, sk = null) {
+    this.pk = pk;
+    this.sk = sk;
+  }
+  void init(string pk) {
+    this.pk = std.hash.base64.decode pk;
+    this.sk = null;
+  }
+  void init() {
+    pk = new ubyte[] crypto_sign_publickeybytes();
+    sk = new ubyte[] crypto_sign_secretkeybytes();
+    crypto_sign_keypair(char*: pk.ptr, char*: sk.ptr);
+  }
+  string getPkString() { return std.hash.base64.encode(pk); }
+  string getSkString() { return std.hash.base64.encode(sk); }
+  string sign(string message) {
+    auto sig = new ubyte[] crypto_sign_bytes();
+    if (!sk) fail "can't sign without secret key";
+    // long?? api u realize ur on 32 bit rite
+    crypto_sign_detached(char*: sig.ptr, null, message.(ptr, length), char*: sk.ptr);
+    return std.hash.base64.encode sig;
+  }
+  bool verified(string message, string sig) {
+    scope sig_data = std.hash.base64.decode sig;
+    // There's no length for sig_data because its length is statically known.
+    if (crypto_sign_verify_detached(char*: sig_data.ptr, message.(ptr, length), char*: pk.ptr)) {
+      return false;
+    }
+    return true;
+  }
+}

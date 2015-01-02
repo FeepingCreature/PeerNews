@@ -1,0 +1,230 @@
+module peerlist;
+
+import models, nonce, crypto, std.thread, std.socket, std.string, std.cgi, std.http, std.json, std.time, std.hash.base64;
+
+context cgi {
+  string method, path, query_string;
+  (string, string)[] args;
+  string _body;
+  Socket socket;
+  (string, string)[] headers;
+  void delegate(string) send;
+  void clear() {
+    method = null; path = null; query_string = null;
+    args = null;
+    _body = null;
+    socket = null;
+    headers = null;
+    send = null;
+  }
+  string getArg(string name) {
+    for auto pair <- args if pair[0] == name return pair[1];
+    return null;
+  }
+}
+
+void header(int mode, string type) using cgi {
+  if (200 <= mode < 300) send "HTTP/1.0 $mode OK\r\n";
+  else if (500 <= mode < 600) send "HTTP/1.0 $mode Internal Server Error\r\n";
+  else fail "what is $mode";
+  send "Content-Type: $type\r\n";
+  send "\r\n";
+}
+
+void route2() using cgi {
+  if (path == "/get-public-ip") {
+    header(200, "text/plain");
+    send socket.getRemoteAddress().asString();
+    return;
+  }
+  if (path == "/get-nonce") {
+    header(200, "text/plain");
+    send generateNonce();
+    return;
+  }
+  header(200, "text/html");
+  send "<!DOCTYPE html>";
+  using scoped std.cgi.outputfn = send {
+    if (path == "/register") {
+      auto signed_message = json_unpack!SignedMessage getArg "json";
+      auto register_request = json_unpack!RegisterMe signed_message.message;
+      auto crypto = new SignatureCrypto register_request.pk;
+      if (!crypto.verified(signed_message.(message, signature))) {
+        html \{
+          head title "Problem!";
+          body \{
+            h3 "Incorrect signature!";
+            p "The signature provided did not match the public key.";
+            p "Your identity could not be verified.";
+            p "JSON looks good though.";
+          }
+        }
+        return;
+      }
+      auto current_addr = socket.getRemoteAddress().asString();
+      if (register_request.ip != current_addr) {
+        html \{
+          head title "Problem!";
+          body \{
+            h3 "Incorrect address!";
+            p "The address in your request packet does not match the address you are connecting from.";
+            p "This worries me.";
+          }
+        }
+        return;
+      }
+      if (!consumedValidNonce(register_request.nonce)) {
+        html \{
+          head title "Problem!";
+          body \{
+            h3 "Invalid nonce!";
+            p "The nonce you supplied is not valid or has expired.";
+            p "I cannot follow your request. Sorry.";
+          }
+        }
+        return;
+      }
+      html \{
+        head title "Register";
+        body \{
+          h3 "Your signature has been validated and is correct.";
+          p "You are \"$(register_request.nick)\" from $(socket.getRemoteAddress().asString()).";
+          p "I will remember you for this pk.";
+        }
+      }
+      return;
+    }
+    html \{
+      head title "Hello World";
+      body \{
+        h3 "Hello World!";
+        h4 "path is $path";
+        h5 "query is $query_string";
+        h5 "URL args = $args";
+        p "This is the placeholder page! Hi!";
+        p "You are $(socket.getRemoteAddress().asString()) I think?";
+      }
+    }
+  }
+}
+
+void route() using cgi {
+  auto send-backup = send;
+  set-handler (Error err) {
+    using scoped std.cgi.outputfn = send-backup {
+      send-backup "HTTP/1.0 500 Internal Server Error\r\n";
+      send-backup "Content-type: text/html\r\n\r\n<!DOCTYPE html>";
+      html \{
+        head title "Failure!";
+        body \{
+          h3 "An error has occurred!";
+          h4 "$err";
+          import std.process;
+          auto trace = read-fcc-backtrace();
+          p "Location:";
+          p \{
+            table \{
+              for int i <- ints && auto cur <- trace {
+                tr \{
+                  td "#$i";
+                  td "in $(cur.fun) $(cur.pos)";
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    invoke-exit "return-from-route";
+  }
+  define-exit "return-from-route" return;
+  char[auto~] buffer;
+  using scoped cgi.send = λ(string s) { buffer ~= s; }
+    route2();
+  cgi.send buffer[];
+}
+
+void handleSocket(Socket sock) {
+  onFailure sock.close;
+  
+  writeln "Receiving header.";
+  char[auto~] buffer;
+  auto socket_reader = castIter!string readsocket sock;
+  string header_string;
+  for auto part <- socket_reader {
+    buffer ~= part;
+    if (auto pos = buffer[].find("\r\n\r\n")) {
+      header_string = buffer[0..pos].dup;
+      auto new_buffer = buffer[pos + 4 .. $].dup;
+      buffer.free;
+      buffer = new_buffer;
+      break;
+    }
+  }
+  auto lines_array = header_string.split "\r\n";
+  auto lines = lines_array.iterator;
+  writeln "body overhang: $(buffer.length)";
+  
+  string first_line <- lines;
+  string method = (&first_line).slice(" ");
+  string query_string = (&first_line).slice(" ");
+  string path = &query_string #.slice("?");
+  (string, string)[auto~] args;
+  for auto part <- query_string.split("&") {
+    auto pair = part.slice("=");
+    pair[1] = pair[1].urlDecode();
+    args ~= pair;
+  }
+  string protocol = first_line;
+  
+  (string, string)[auto~] headers;
+  for auto line <- lines {
+    headers ~= line.slice(": ");
+  }
+  string findHeader(string key) {
+    key = toLower key;
+    for auto pair <- headers if toLower pair[0] == key return pair[1];
+    return null;
+  }
+  
+  string httpbody;
+  if (auto content-length-str = findHeader "Content-Length") {
+    auto content-length = atoi content-length-str;
+    while (buffer.length < content-length) {
+      if (auto part <- socket_reader) buffer ~= part;
+      else fail "connection closed before body could be read";
+    }
+    assert(buffer.length == content-length, "received too-large body, cannot proceed safely");
+    httpbody = buffer[];
+  }
+  
+  writeln "Method: $method";
+  writeln "Path: $path";
+  writeln "Protocol: $protocol";
+  writeln "header: $headers";
+  void sendline(string s) {
+    sock.sendAll ubyte[]:s;
+    sock.sendAll ubyte[]:"\r\n";
+  }
+  
+  cgi.(socket, method, path, headers, send, _body, query_string, args)
+    = (sock, method, path, headers[], λ(string s) { sock.sendAll ubyte[]:s; }, httpbody, query_string, args[]);
+  onExit cgi.clear();
+  route();
+  
+  sock.close();
+}
+
+void main() {
+  writeln "Starting server.";
+  auto listen = new Socket;
+  listen.reuse(true);
+  listen.bind new TcpAddress("0.0.0.0", 8899);
+  auto tp = new ThreadPool 8;
+  listen.listen(8);
+  writeln "Server running.";
+  while (auto sock = listen.accept()) {
+    writeln "Connection accepted, dispatching.";
+    tp.addTask new λ { handleSocket(sock); }
+  }
+}

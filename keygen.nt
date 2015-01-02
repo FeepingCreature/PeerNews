@@ -1,0 +1,58 @@
+module keygen;
+
+import models, crypto, std.json, std.http, std.hash.base64;
+
+void main() {
+  writeln "Signing Hello World";
+  auto message = "Hello World";
+  
+  auto crypt = new SignatureCrypto;
+  writeln "pk: $(std.hash.base64.encode crypt.pk)";
+  writeln "sk: $(std.hash.base64.encode crypt.sk)";
+  
+  auto sig = crypt.sign(message);
+  writeln "Signed: $sig";
+  
+  if (!crypt.verified(message, sig)) {
+    fail "Signature validation failed!";
+  }
+  writeln "Signature validation succeeded!";
+  struct Test {
+    string foo;
+    int bar;
+    int[] baz;
+    string toString() { return "Test { foo $foo, bar $bar, baz $baz }"; }
+  }
+  Test test;
+  test.foo = "hi";
+  test.bar = 5;
+  test.baz = [3, 4, 5];
+  auto json = json_pack test;
+  writeln "json: $json";
+  Test test2 = json_unpack!Test json;
+  writeln "decoded: $test2";
+  
+  string list_server = "127.0.0.1:8899";
+  
+  writeln "http://$list_server/get-public-ip";
+  string myip = string: download "http://$list_server/get-public-ip";
+  string nonce = string: download "http://$list_server/get-nonce";
+  writeln "public ip: $myip";
+  writeln "register nonce: $nonce";
+  
+  writeln "generating register request";
+  RegisterMe rme;
+  rme.nick = "feep";
+  rme.pk = crypt.getPkString();
+  rme.ip = myip;
+  rme.nonce = nonce;
+  string register_str = json_pack rme;
+  writeln "inner json: $register_str";
+  SignedMessage sm;
+  sm.message = register_str;
+  sm.signature = crypt.sign(sm.message);
+  string final_str = json_pack sm;
+  writeln "packed json: $final_str";
+  final_str = final_str.urlEncode();
+  writeln "URL: /register?json=$final_str";
+}
