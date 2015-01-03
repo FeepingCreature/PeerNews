@@ -10,6 +10,6 @@ struct SignedMessage {
 struct RegisterMe {
   string nick;
   string pk; // base64
-  string ip; // must match get-public-ip
+  string addr; // must match get-public-addr
   string nonce; // must match previous request to get-nonce. only valid once.
 }

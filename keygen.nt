@@ -34,9 +34,17 @@ void main() {
   
   string list_server = "127.0.0.1:8899";
   
-  writeln "http://$list_server/get-public-ip";
-  string myip = string: download "http://$list_server/get-public-ip";
-  string nonce = string: download "http://$list_server/get-nonce";
+  string download_expect(int code, string url) {
+    string content = string:download (url, responsecode => &int responsecode);
+    if (responsecode != code) {
+      fail "while querying $url:
+expected code $code, got $responsecode $content";
+    }
+    return content;
+  }
+  
+  string myip = download_expect(200, "http://$list_server/get-my-addr");
+  string nonce = download_expect(200, "http://$list_server/generate-nonce");
   writeln "public ip: $myip";
   writeln "register nonce: $nonce";
   
@@ -44,7 +52,7 @@ void main() {
   RegisterMe rme;
   rme.nick = "feep";
   rme.pk = crypt.getPkString();
-  rme.ip = myip;
+  rme.addr = myip;
   rme.nonce = nonce;
   string register_str = json_pack rme;
   writeln "inner json: $register_str";
@@ -54,5 +62,9 @@ void main() {
   string final_str = json_pack sm;
   writeln "packed json: $final_str";
   final_str = final_str.urlEncode();
-  writeln "URL: /register?json=$final_str";
+  writeln "attempting to register with peerlist server";
+  download_expect(200, "http://$list_server/register?json=$final_str");
+  writeln "identity registered, verifying";
+  download_expect(200, "http://$list_server/query-address?pk=$(crypt.getPkString())");
+  writeln "identity verified.";
 }

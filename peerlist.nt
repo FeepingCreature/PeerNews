@@ -1,6 +1,8 @@
 module peerlist;
 
-import models, nonce, crypto, std.thread, std.socket, std.string, std.cgi, std.http, std.json, std.time, std.hash.base64;
+import models, nonce, crypto;
+import std.(thread, socket, string, cgi, http, json, time,
+  hash.base64, macros.switchover, lib.sqlite3);
 
 context cgi {
   string method, path, query_string;
@@ -23,87 +25,144 @@ context cgi {
   }
 }
 
-void header(int mode, string type) using cgi {
-  if (200 <= mode < 300) send "HTTP/1.0 $mode OK\r\n";
-  else if (500 <= mode < 600) send "HTTP/1.0 $mode Internal Server Error\r\n";
-  else fail "what is $mode";
+void header(int code, string type) using cgi {
+  string desc;
+  switch int i over i == code {
+    case 200: desc = "OK";
+    case 201: desc = "Created";
+    case 202: desc = "Accepted";
+    case 203: desc = "Non-Authoritive Information";
+    case 204: desc = "No Content";
+    case 205: desc = "Reset Content";
+    case 206: desc = "Partial Content";
+    case 400: desc = "Bad Request";
+    case 401: desc = "Unauthorized";
+    case 403: desc = "Forbidden";
+    case 404: desc = "Not Found";
+    case 405: desc = "Method Not Allowed";
+    case 406: desc = "Not Acceptable";
+    case 410: desc = "Gone";
+    case 500: desc = "Internal Server Error";
+    case 501: desc = "Not Implemented";
+    case 502: desc = "Bad Gateway";
+    case 503: desc = "Service Unavailable";
+    default: fail "what is $code";
+  }
+  send "HTTP/1.0 $code $desc\r\n";
   send "Content-Type: $type\r\n";
   send "\r\n";
 }
 
-void route2() using cgi {
-  if (path == "/get-public-ip") {
+void invalidNonceError() using cgi {
+  html \{
+    head title "Problem!";
+    body \{
+      h3 "Invalid nonce!";
+      p "The nonce you supplied is not valid or has expired.";
+      p "I cannot follow your request. Sorry.";
+    }
+  }
+}
+
+void incorrectAddressError() using cgi {
+  html \{
+    head title "Problem!";
+    body \{
+      h3 "Incorrect address!";
+      p "The address in your request packet does not match the address you are connecting from.";
+      p "This worries me.";
+    }
+  }
+}
+
+void incorrectSignatureError() using cgi {
+  html \{
+    head title "Problem!";
+    body \{
+      h3 "Incorrect signature!";
+      p "The signature provided did not match the public key.";
+      p "Your identity could not be verified.";
+      p "JSON looks good though.";
+    }
+  }
+}
+
+void withPeerlistDb(void delegate(Database) dg) {
+  scope db = new Database "peerlist.db";
+  onExit db.close;
+  db.openStatementList();
+  onExit db.finStatementList();
+  dg(db);
+}
+
+void route2() using cgi using scoped std.cgi.outputfn = send {
+  if (path == "/get-my-addr") {
     header(200, "text/plain");
     send socket.getRemoteAddress().asString();
     return;
   }
-  if (path == "/get-nonce") {
+  if (path == "/generate-nonce") {
     header(200, "text/plain");
     send generateNonce();
     return;
   }
-  header(200, "text/html");
-  send "<!DOCTYPE html>";
-  using scoped std.cgi.outputfn = send {
-    if (path == "/register") {
-      auto signed_message = json_unpack!SignedMessage getArg "json";
-      auto register_request = json_unpack!RegisterMe signed_message.message;
-      auto crypto = new SignatureCrypto register_request.pk;
-      if (!crypto.verified(signed_message.(message, signature))) {
-        html \{
-          head title "Problem!";
-          body \{
-            h3 "Incorrect signature!";
-            p "The signature provided did not match the public key.";
-            p "Your identity could not be verified.";
-            p "JSON looks good though.";
-          }
-        }
-        return;
+  if (path == "/query-address") {
+    string pk = getArg("pk");
+    withPeerlistDb λ(Database db) {
+      if string address <- db.exec("select address from peerlist where pk = ?", pk) {
+        header(200, "text/plain");
+        send address;
+      } else {
+        header(404, "text/plain");
+        send "PK not found in peerlist!";
       }
-      auto current_addr = socket.getRemoteAddress().asString();
-      if (register_request.ip != current_addr) {
-        html \{
-          head title "Problem!";
-          body \{
-            h3 "Incorrect address!";
-            p "The address in your request packet does not match the address you are connecting from.";
-            p "This worries me.";
-          }
-        }
-        return;
-      }
-      if (!consumedValidNonce(register_request.nonce)) {
-        html \{
-          head title "Problem!";
-          body \{
-            h3 "Invalid nonce!";
-            p "The nonce you supplied is not valid or has expired.";
-            p "I cannot follow your request. Sorry.";
-          }
-        }
-        return;
-      }
-      html \{
-        head title "Register";
-        body \{
-          h3 "Your signature has been validated and is correct.";
-          p "You are \"$(register_request.nick)\" from $(socket.getRemoteAddress().asString()).";
-          p "I will remember you for this pk.";
-        }
-      }
+    }
+    return;
+  }
+  if (path == "/register") {
+    header(200, "text/html");
+    send "<!DOCTYPE html>";
+    auto signed_message = json_unpack!SignedMessage getArg "json";
+    auto register_request = json_unpack!RegisterMe signed_message.message;
+    auto crypto = new SignatureCrypto register_request.pk;
+    if (!crypto.verified(signed_message.(message, signature))) {
+      incorrectSignatureError;
       return;
     }
+    auto current_addr = socket.getRemoteAddress().asString();
+    if (register_request.addr != current_addr) {
+      incorrectAddressError;
+      return;
+    }
+    if (!consumedValidNonce(register_request.nonce)) {
+      invalidNonceError();
+      return;
+    }
+    withPeerlistDb λ(Database db) {
+      db.exec("insert or replace into peerlist (nick, address, pk) values(?, ?, ?)",
+        register_request.nick, current_addr, register_request.pk);
+    }
     html \{
-      head title "Hello World";
+      head title "Registered!";
       body \{
-        h3 "Hello World!";
-        h4 "path is $path";
-        h5 "query is $query_string";
-        h5 "URL args = $args";
-        p "This is the placeholder page! Hi!";
-        p "You are $(socket.getRemoteAddress().asString()) I think?";
+        h3 "Your signature has been validated and is correct.";
+        p "You are \"$(register_request.nick)\" from $(socket.getRemoteAddress().asString()).";
+        p "I will remember you for this pk.";
       }
+    }
+    return;
+  }
+  header([404, 200][path == "/"], "text/html");
+  send "<!DOCTYPE html>";
+  html \{
+    head title "Hello World";
+    body \{
+      h3 "Hello World!";
+      h4 "path is $path";
+      h5 "query is $query_string";
+      h5 "URL args = $args";
+      p "This is the placeholder page! Hi!";
+      p "You are $(socket.getRemoteAddress().asString()) I think?";
     }
   }
 }

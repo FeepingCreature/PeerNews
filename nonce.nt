@@ -1,5 +1,7 @@
 module nonce;
 
+import std.time, std.thread, std.hash.base64;
+
 shared (type-of µsec(), string)[auto~] active_nonces;
 shared Mutex nonce_lock;
 void init() { nonce_lock = new Mutex; }
