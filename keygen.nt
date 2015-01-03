@@ -1,6 +1,6 @@
 module keygen;
 
-import models, crypto, std.json, std.http, std.hash.base64;
+import models, crypto, std.json, std.http, std.hash.base64, std.process, std.file, std.ini;
 
 void main() {
   writeln "Signing Hello World";
@@ -67,4 +67,12 @@ expected code $code, got $responsecode $content";
   writeln "identity registered, verifying";
   download_expect(200, "http://$list_server/query-address?pk=$(crypt.getPkString())");
   writeln "identity verified.";
+  auto peernews-config = getConfigPath("peernews");
+  if (!exists peernews-config) mkdir peernews-config;
+  auto identfile = new ConfigFile peernews-config.sub("identity.cfg");
+  using identfile {
+    setKey("identity.secret-key", crypt.getSkString());
+    setKey("identity.public-key", crypt.getPkString());
+    setKey("identity.nickname", rme.nick);
+  }
 }
