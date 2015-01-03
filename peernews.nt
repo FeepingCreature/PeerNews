@@ -1,0 +1,27 @@
+module peernews;
+
+import models, nonce, crypto, server;
+import std.(cgi, json, lib.sqlite3);
+
+void route() using cgi {
+  header([404, 200][path == "/"], "text/html");
+  send "<!DOCTYPE html>";
+  html \{
+    head title "Hello World";
+    body \{
+      h3 "Hello World!";
+      h4 "path is $path";
+      h5 "query is \"$query_string\"";
+      h5 "URL args = $args";
+      p "This is the placeholder page! Hi!";
+      p "You are $(socket.getRemoteAddress().asString()) I think?";
+    }
+  }
+}
+
+void main() {
+  writeln "Starting server...";
+  auto server = new Server("0.0.0.0", 8897, λ{ route; });
+  writeln "Server running.";
+  server.loop;
+}
