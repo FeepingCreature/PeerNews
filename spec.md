@@ -85,7 +85,9 @@ The listen, believe and trust actions add an identity to the peer list with a gi
 - http client
  
 ## DATA STRUCTURE SKETCHES ETC
- 
+
+* TODO rederive from create-peernewsdb.sh
+
 Identity: Nickname, PubKey
  
 Content: Hash, Text
@@ -123,4 +125,3 @@ TrustCap(TrustRating) = 1/(1 - TrustRating)
   0.9         10       Listen
   0.99        200      Believe
   0.999       1000     Trust
- 

@@ -53,7 +53,7 @@ void header(int code, string type) using cgi {
 
 void handleErrors(void delegate() route) using cgi {
   auto send-backup = send;
-  set-handler (Error err) {
+  set-handler (UnrecoverableError err) {
     using scoped std.cgi.outputfn = send-backup {
       send-backup "HTTP/1.0 500 Internal Server Error\r\n";
       send-backup "Content-type: text/html\r\n\r\n<!DOCTYPE html>";

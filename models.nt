@@ -2,6 +2,8 @@
 // common data structures
 module models;
 
+import crypto, db;
+
 struct SignedMessage {
   string signature;
   string message;
@@ -12,4 +14,150 @@ struct RegisterMe {
   string pk; // base64
   string addr; // must match get-public-addr
   string nonce; // must match previous request to get-nonce. only valid once.
+}
+
+// database classes
+
+class Identity {
+  long id;
+  string pk;
+  string nick, address;
+  void init(string pk, nick, address = null) {
+    this.pk = pk;
+    this.nick = nick;
+    this.address = address;
+  }
+  void init(Database db, long id) {
+    this.id = id;
+    assert (pk, nick, address) <- db.exec("
+      select pk, nick, address
+      from identity
+      where id=?", id);
+  }
+  void init(Database db, string pk) {
+    this.pk = pk;
+    assert (id, nick, address) <- db.exec("
+      select id, nick, address
+      from identity
+      where pk=?", pk);
+  }
+  void save(Database db) {
+    // sqlite3 y u no insert returning :(
+    db.exec("insert or replace into identity (pk, nick) values(?, ?)", pk, nick);
+    assert id <- db.exec("select id from identity where pk = ?", pk);
+  }
+}
+
+class Content {
+  long id;
+  string hash, data;
+  void init(string data) {
+    this.data = data;
+    this.hash = crypto.hash ubyte[]: data;
+  }
+  void init(Database db, string hash) {
+    this.hash = hash;
+    assert (id, data) <- db.exec("select id, data from content where hash = ?", hash);
+  }
+  void save(Database db) {
+    db.exec("insert or ignore into content (hash, data) values(?, ?)", hash, data);
+    assert id <- db.exec("select id from content where hash = ?", hash);
+  }
+}
+
+class Post {
+  long id;
+  Identity poster;
+  Content _body;
+  Post parent;
+  Post[] children;
+  string created; // sqlite3 datetime
+  bool edits; // does it edit its parent?
+  void init() { }
+  // TODO memoize
+  void init(Database db, long id) {
+    this.id = id;
+    assert (long ident, long parent_id, string created) <- db.exec("
+      select identity.id, parent, created from post
+      inner join identity on post.poster = identity.id
+      where post.id = ?", id);
+    Post parent;
+    if (parent) parent = new Post(db, parent_id);
+    init(db, new Identity(db, ident), parent, created);
+  }
+  float rate(Database db) {
+    // grab all votes that are relevant to this post
+    // from a peer that we trust
+    // sum them limited by trust cap
+    assert float res <- db.exec("
+      select sum(min(cap, rating)) as res
+      from (
+        select rating, trust, 1/(1-trust) as cap
+        from rating
+        inner join peers on rater_id = peers.id
+        where post_id = ?
+      )", id);
+    return res;
+  }
+  void init(Database db, Identity poster, Post parent, string created) {
+    this.poster = poster;
+    this.parent = parent;
+    this.created = created;
+    string hash;
+    if (parent) {
+      assert (id, hash, edits) <- db.exec("
+        select post.id, content.hash, edits from post
+        inner join content on post.body = content.id
+        where poster=? and parent=? and created=?", poster.id, parent.id, created);
+    } else {
+      assert ((id, hash, edits) <- db.exec("
+        select post.id, content.hash, edits from post
+        inner join content on post.body = content.id
+        where poster=? and parent is null and created=?", poster.id, created),
+        "no such post: $(poster.id) from $created");
+    }
+    this._body = new Content(db, hash);
+    Post[auto~] children;
+    for (long ident, string created) <- db.exec("
+      select poster, created from post
+      where parent=?", id)
+    {
+      children ~= new Post(db, new Identity(db, ident), this, created);
+    }
+    this.children = children[];
+  }
+  void save(Database db) {
+    if (parent) {
+      db.exec("insert into post (poster, body, parent, edits) values(?, ?, ?, ?)",
+        poster.id, _body.id, parent.id, edits);
+    } else {
+      db.exec("insert into post (poster, body, parent, edits) values(?, ?, null, ?)",
+        poster.id, _body.id, edits);
+    }
+    assert (id, created) <- db.exec("select id, created from post where rowid=last_insert_rowid()");
+  }
+}
+
+class TopLevelPost {
+  long id;
+  string title, link;
+  Post post;
+  void init() { }
+  void init(Database db, long id) {
+    this.id = id;
+    assert (title, link) <- db.exec("select title, link from toplevelpost where id=?", id);
+    post = new Post(db, id);
+  }
+  float rate(Database db) { return post.rate db; }
+  void save(Database db) {
+    assert(post.id != 0);
+    if (link) {
+      db.exec("insert into toplevelpost (id, title, link) values(?, ?, ?)",
+        post.id, title, link);
+    } else {
+      db.exec("insert into toplevelpost (id, title) values(?, ?)",
+        post.id, title);
+    }
+    assert id <- db.exec("select id from toplevelpost where rowid=last_insert_rowid()");
+  }
 }

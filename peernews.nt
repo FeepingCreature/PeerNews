@@ -1,9 +1,101 @@
 module peernews;
 
 import models, nonce, crypto, server;
-import std.(cgi, json, lib.sqlite3);
+import std.(cgi, json, lib.sqlite3, ini, file, process);
+
+void withPeernewsDb(void delegate(Database) dg) {
+  scope db = new Database "peernews.db";
+  onExit db.close;
+  db.openStatementList();
+  onExit db.finStatementList();
+  db.exec("pragma foreign_keys=on");
+  dg(db);
+}
 
 void route() using cgi {
+  if (path == "/test") {
+    header(200, "text/html");
+    send "<!DOCTYPE html>";
+    html \{
+      head \{
+        title "Test Page";
+        send "<meta charset=\"UTF-8\">";
+      }
+      body \{
+        h5 \{
+          send "PeerNews ";
+          emph "Test Page";
+        }
+        auto peernews-config = getConfigPath("peernews");
+        auto identfile = new ConfigFile peernews-config.sub("identity.cfg");
+        auto sk = identfile.getKey("identity.secret-key");
+        auto pk = identfile.getKey("identity.public-key");
+        auto nick = identfile.getKey("identity.nickname");
+        if (!sk || !pk) {
+          fail "Identity not found!";
+        }
+        p "Hi, '$(nick)'!";
+        withPeernewsDb λ(Database db) {
+          if (!int i <- db.exec("select 1 from identity where pk=?", pk)) {
+            auto ident = new Identity(pk => pk, nick => nick);
+            ident.save(db);
+            p "Created self identity!";
+          }
+          auto own_identity = new Identity(db, pk);
+          if (!int i <- db.exec("select 1 from toplevelpost")) {
+            auto dfl_content = new Content("Hello World From Peernews!");
+            dfl_content.save(db);
+            auto dfl_post = new TopLevelPost;
+            dfl_post.title = "Hello World Default Post";
+            dfl_post.post = new Post;
+            dfl_post.post.poster = own_identity;
+            dfl_post.post._body = dfl_content;
+            dfl_post.post.save(db);
+            dfl_post.save(db);
+            p "Created default post!";
+          }
+          assert long id <- db.exec("select id from toplevelpost limit 1");
+          auto dfl_post = new TopLevelPost(db, id);
+          div \{
+            table \{
+              tr \{
+                td \{
+                  table \{
+                    tr td b.class "upvote" "▲";
+                    tr td \{
+                      float vote = dfl_post.rate(db);
+                      import c.math;
+                      int as_int = lrintf truncf vote;
+                      send "$as_int";
+                    }
+                    tr td b.class "downvote" "▼";
+                  }
+                }
+                td \{
+                  table \{
+                    tr td \{
+                      if (dfl_post.link) {
+                        a.href(dfl_post.link) dfl_post.title;
+                      } else {
+                        send dfl_post.title;
+                      }
+                    }
+                    tr td small "submitted t ago by $(dfl_post.post.poster.nick)";
+                    tr td small b \{
+                      send "n comments ";
+                      span.onclick "alert(\"todo\");" "reply";
+                    }
+                  }
+                }
+              }
+            }
+          }
+          send "<hr>";
+        }
+      }
+    }
+    return;
+  }
   header([404, 200][path == "/"], "text/html");
   send "<!DOCTYPE html>";
   html \{

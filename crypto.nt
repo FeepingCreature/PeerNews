@@ -40,3 +40,13 @@ class SignatureCrypto {
     return true;
   }
 }
+
+string hash(ubyte[] data) {
+  scope res = new ubyte[] crypto_generichash_bytes();
+  crypto_generichash(
+    char*:res.ptr, res.length,
+    char*:data.ptr, data.length,
+    null, 0 // key
+  );
+  return std.hash.base64.encode res[];
+}
