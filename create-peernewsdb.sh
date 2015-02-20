@@ -31,7 +31,7 @@ create table post (
   foreign key(poster) references identity(id),
   foreign key(body) references content(id),
   foreign key(parent) references post(id),
-  unique(poster, parent, created) -- network key
+  unique(poster, created) -- network key
 );
 create table rating (
   id integer primary key not null,

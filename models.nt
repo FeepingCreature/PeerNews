@@ -110,10 +110,12 @@ class Post {
         inner join content on post.body = content.id
         where poster=? and parent=? and created=?", poster.id, parent.id, created);
     } else {
+      // removed "parent is null" check because
+      // (poster, created) is now sufficient as a nk --feep, 20.2.15
       assert ((id, hash, edits) <- db.exec("
         select post.id, content.hash, edits from post
         inner join content on post.body = content.id
-        where poster=? and parent is null and created=?", poster.id, created),
+        where poster=? and created=?", poster.id, created),
         "no such post: $(poster.id) from $created");
     }
     this._body = new Content(db, hash);
