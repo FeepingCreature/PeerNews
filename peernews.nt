@@ -12,22 +12,164 @@ void withPeernewsDb(void delegate(Database) dg) {
   dg(db);
 }
 
+struct SaveResponse {
+  bool success;
+  string message; // success = false
+  string html; // success = true
+}
+
+ConfigFile getIdentFile() {
+  auto peernews-config = getConfigPath("peernews");
+  auto identfile = new ConfigFile peernews-config.sub("identity.cfg");
+  return identfile;
+}
+
+Identity getOwnIdentity(Database db) {
+  auto identfile = getIdentFile();
+  auto pk = identfile.getKey("identity.public-key");
+  auto nick = identfile.getKey("identity.nickname");
+  if (!int i <- db.exec("select 1 from identity where pk=?", pk)) {
+    auto ident = new Identity(pk => pk, nick => nick);
+    ident.save(db);
+    return ident;
+  }
+  return new Identity(db, pk);
+}
+
+void writeReplyDlg(Post parent) using cgi {
+  auto id = parent.id;
+  div
+  .class("replydlg").id("reply_dlg_$id")
+  .style("display: none; border: 1px solid blue; ") \{
+    input
+      .type("hidden").class("post_pk")
+      .value(parent.poster.pk);
+    input
+      .type("hidden").class("post_time")
+      .value(parent.created);
+    textarea.class("text").rows(4).cols(50);
+    br;
+    div.class("replymsg");
+    button
+      .type("button").class("cancelbutton")
+      .onclick("closeReplyDlgFor($id);") "Cancel";
+    button
+      .type("button").class("replybutton")
+      .onclick("saveReplyFor($id);") "Reply";
+  }
+}
+
+void renderComment(Database db, Post post) using cgi {
+  div.class("comment").style("margin-left: 10pt; border: 1px solid rgb(128,128,128); ") \{
+    table \{
+      tr \{
+        td \{
+          table \{
+            tr td b.class "upvote" "▲";
+            tr td b.class "downvote" "▼";
+          }
+        }
+        td \{
+          table \{
+            tr td \{
+              b post.poster.nick;
+              send " ";
+              float vote = post.rate(db);
+              import c.math;
+              int as_int = lrintf truncf vote;
+              small "$as_int points t ago";
+            }
+            tr td \{
+              // TODO hoedown
+              send readback("/usr/bin/hoedown", ["--escape"], post._body.data);
+            }
+            tr td small b \{
+              span.onclick "openReplyDlgFor($(post.id));" "reply";
+            }
+          }
+        }
+      }
+      tr td.colspan(2) \{
+        div.class("children") \{
+          writeReplyDlg(post);
+          for auto child <- post.children renderComment (db, child);
+        }
+      }
+    }
+  }
+}
+
 void route() using cgi {
+  if (path == "/save") {
+    if (cgi.method != "POST") {
+      header(405, "text/html");
+      send "<!DOCTYPE html>";
+      html \{
+        head \{
+          title "Header not allowed";
+        }
+        body \{
+          h2 "Method Not Allowed";
+          p "You tried to use GET to save a comment.";
+          p "Please use POST instead, as is required by REST for Good And Just Reasons.";
+        }
+      }
+      return;
+    }
+    header(200, "application/json");
+    void error(string msg) {
+      SaveResponse resp;
+      resp.success = false;
+      resp.message = "Error: $msg";
+      send json_pack resp;
+    }
+    string pk = cgi.getArg("parent_pk");
+    if (pk == "") return error "Parent PK not provided.";
+    string dt = cgi.getArg("parent_time");
+    if (dt == "") return error "Parent post date not provided.";
+    string text = cgi.getArg("text");
+    if (text == "") return error "Comment text not provided.";
+    SaveResponse resp;
+    withPeernewsDb λ(Database db) {
+      auto parent = new Identity(db, pk);
+      auto parentpost = new Post(db, poster => parent, created => dt, parentpost => null);
+      
+      auto content = new Content text;
+      content.save(db);
+      
+      auto newpost = new Post;
+      newpost.poster = getOwnIdentity(db);
+      newpost._body = content;
+      newpost.parent = parentpost;
+      newpost.save(db);
+      char[auto~] html;
+      using scoped send = λ(string s) { html ~= s; } {
+        using scoped std.cgi.outputfn = cgi.send {
+          renderComment(db, newpost);
+        }
+      }
+      resp.html = html[];
+    }
+    resp.success = true;
+    resp.message = "Saved.";
+    send json_pack resp;
+    return;
+  }
   if (path == "/test") {
     header(200, "text/html");
     send "<!DOCTYPE html>";
     html \{
       head \{
         title "Test Page";
-        send "<meta charset=\"UTF-8\">";
+        send "<meta charset=\"UTF-8\" />";
+        script.src("https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js");
       }
       body \{
         h5 \{
           send "PeerNews ";
           emph "Test Page";
         }
-        auto peernews-config = getConfigPath("peernews");
-        auto identfile = new ConfigFile peernews-config.sub("identity.cfg");
+        auto identfile = getIdentFile();
         auto sk = identfile.getKey("identity.secret-key");
         auto pk = identfile.getKey("identity.public-key");
         auto nick = identfile.getKey("identity.nickname");
@@ -35,20 +177,43 @@ void route() using cgi {
           fail "Identity not found!";
         }
         p "Hi, '$(nick)'!";
+        script.type "text/javascript" \{
+          send `
+function openReplyDlgFor(id) {
+  $("#reply_dlg_"+id).show();
+}
+function closeReplyDlgFor(id) {
+  $("#reply_dlg_"+id).hide();
+}
+function saveReplyFor(id) {
+  var form = $("#reply_dlg_"+id);
+  form.find(".replymsg").html("Saving.");
+  $.post("save", {
+      text: form.find(".text").val(),
+      parent_pk: form.find(".post_pk").val(),
+      parent_time: form.find(".post_time").val(),
+    }, null, "json"
+  ).done(function(data) {
+    if (data.success) {
+      closeReplyDlgFor(id);
+      $(data.html).insertAfter(form);
+    } else {
+      form.find(".replymsg").html(data.message);
+    }
+  }).fail(function(xhr, textStatus, errorThrown) {
+    form.find(".replymsg").html("An error has occurred: "+textStatus+", "+errorThrown+" '"+xhr.responseText+"'");
+  });
+}
+          `;
+        }
         withPeernewsDb λ(Database db) {
-          if (!int i <- db.exec("select 1 from identity where pk=?", pk)) {
-            auto ident = new Identity(pk => pk, nick => nick);
-            ident.save(db);
-            p "Created self identity!";
-          }
-          auto own_identity = new Identity(db, pk);
           if (!int i <- db.exec("select 1 from toplevelpost")) {
             auto dfl_content = new Content("Hello World From Peernews!");
             dfl_content.save(db);
             auto dfl_post = new TopLevelPost;
             dfl_post.title = "Hello World Default Post";
             dfl_post.post = new Post;
-            dfl_post.post.poster = own_identity;
+            dfl_post.post.poster = getOwnIdentity(db);
             dfl_post.post._body = dfl_content;
             dfl_post.post.save(db);
             dfl_post.save(db);
@@ -63,7 +228,7 @@ void route() using cgi {
                   table \{
                     tr td b.class "upvote" "▲";
                     tr td \{
-                      float vote = dfl_post.rate(db);
+                      float vote = dfl_post.post.rate(db);
                       import c.math;
                       int as_int = lrintf truncf vote;
                       send "$as_int";
@@ -83,14 +248,17 @@ void route() using cgi {
                     tr td small "submitted t ago by $(dfl_post.post.poster.nick)";
                     tr td small b \{
                       send "n comments ";
-                      span.onclick "alert(\"todo\");" "reply";
+                      auto id = dfl_post.post.id;
+                      span.onclick "openReplyDlgFor($id);" "reply";
                     }
                   }
                 }
               }
             }
           }
-          send "<hr>";
+          hr;
+          writeReplyDlg(dfl_post.post);
+          for auto child <- dfl_post.post.children renderComment (db, child);
         }
       }
     }
@@ -106,6 +274,7 @@ void route() using cgi {
       h5 "query is \"$query_string\"";
       h5 "URL args = $args";
       p "This is the placeholder page! Hi!";
+      a.href("/test") "Did you mean /test?";
       p "You are $(socket.getRemoteAddress().asString()) I think?";
     }
   }

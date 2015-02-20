@@ -14,12 +14,18 @@ Tasks left:
   * (Title "Hello World", link to example.com, etc).
   * DONE
 * Show this post.
-* Show a "comment" form.
+  * DONE
+* Show a "reply" form.
+  * DONE
+* Save the comment to the db.
+  * DONE
 * Echo back the comment on submit. (JQuery partial replace!)
-* Echo it back with sundown.
-* Save the comment to the db. (SUBMIT WITH PARENT PK, NOT ID.)
+  * DONE
+* Echo it back with sundown^Whoedown.
+  * DONE
 * Test comment hierarchy.
+  * DONE
 * (Implement editing?)
-* Public test 0.01
 * Implement voting.
+* Public test 0.01
 * Implement JSON export.

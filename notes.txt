@@ -1,0 +1,14 @@
+api for saving comments:
+
+passed:
+
+text=the content of the comment
+// PARENT POST NETWORK KEY
+  parent_pk=the public key of the parent
+  parent_time=the time when the parent was posted
+
+returned:
+
+  success: bool
+  message: failure message
+  html: fragment for the comment

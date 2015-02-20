@@ -27,7 +27,7 @@ create table post (
   -- utc
   created datetime not null default (datetime('now')),
   -- an edit is a response to a comment by the same author marked "edit"
-  edits integer not null default (1),
+  edits integer not null default (0),
   foreign key(poster) references identity(id),
   foreign key(body) references content(id),
   foreign key(parent) references post(id),

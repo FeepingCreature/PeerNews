@@ -17,6 +17,16 @@ context cgi {
     headers = null;
     send = null;
   }
+  void setBody(string data) {
+    _body = data;
+    if (method == "POST") {
+      for auto part <- _body.split("&") {
+        auto pair = part.slice("=");
+        pair[1] = pair[1].urlDecode();
+        args ~= pair;
+      }
+    }
+  }
   string getArg(string name) {
     for auto pair <- args if pair[0] == name return pair[1];
     return null;
@@ -158,8 +168,9 @@ class Server {
     
     cgi.clear();
     onExit cgi.clear();
-    cgi.(socket, method, path, headers, send, _body, query_string, args)
-      = (sock, method, path, headers[], λ(string s) { sock.sendAll ubyte[]:s; }, httpbody, query_string, args[]);
+    cgi.(socket, method, path, headers, send, query_string, args)
+      = (sock, method, path, headers[], λ(string s) { sock.sendAll ubyte[]:s; }, query_string, args[]);
+    cgi.setBody(httpbody);
     handleErrors(route);
     
     sock.close();

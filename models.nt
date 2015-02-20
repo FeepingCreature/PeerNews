@@ -83,7 +83,7 @@ class Post {
       where post.id = ?", id);
     Post parent;
     if (parent) parent = new Post(db, parent_id);
-    init(db, new Identity(db, ident), parent, created);
+    init(db, new Identity(db, ident), parent, created.dup);
   }
   float rate(Database db) {
     // grab all votes that are relevant to this post
@@ -99,16 +99,16 @@ class Post {
       )", id);
     return res;
   }
-  void init(Database db, Identity poster, Post parent, string created) {
+  void init(Database db, Identity poster, Post parentpost, string created) {
     this.poster = poster;
-    this.parent = parent;
+    this.parent = parentpost;
     this.created = created;
     string hash;
-    if (parent) {
+    if (parentpost) {
       assert (id, hash, edits) <- db.exec("
         select post.id, content.hash, edits from post
         inner join content on post.body = content.id
-        where poster=? and parent=? and created=?", poster.id, parent.id, created);
+        where poster=? and parent=? and created=?", poster.id, parentpost.id, created);
     } else {
       // removed "parent is null" check because
       // (poster, created) is now sufficient as a nk --feep, 20.2.15
@@ -124,7 +124,7 @@ class Post {
       select poster, created from post
       where parent=?", id)
     {
-      children ~= new Post(db, new Identity(db, ident), this, created);
+      children ~= new Post(db, new Identity(db, ident), this, created.dup);
     }
     this.children = children[];
   }
@@ -150,7 +150,6 @@ class TopLevelPost {
     assert (title, link) <- db.exec("select title, link from toplevelpost where id=?", id);
     post = new Post(db, id);
   }
-  float rate(Database db) { return post.rate db; }
   void save(Database db) {
     assert(post.id != 0);
     if (link) {
