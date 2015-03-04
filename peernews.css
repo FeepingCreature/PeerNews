@@ -1,0 +1,12 @@
+.upvote {
+  font-weight: bold;
+}
+.downvote {
+  font-weight: bold;
+}
+.upvote.selected {
+  color: #ff8b60;
+}
+.downvote.selected {
+  color: #9494ff;
+}

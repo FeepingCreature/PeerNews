@@ -13,9 +13,10 @@ class SignatureCrypto {
     this.pk = pk;
     this.sk = sk;
   }
-  void init(string pk) {
+  void init(string pk, sk = null) {
     this.pk = std.hash.base64.decode pk;
-    this.sk = null;
+    if (sk) this.sk = std.hash.base64.decode sk;
+    else this.sk = null;
   }
   void init() {
     pk = new ubyte[] crypto_sign_publickeybytes();

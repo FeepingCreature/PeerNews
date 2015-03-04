@@ -1,15 +1,17 @@
 module peernews;
 
-import models, nonce, crypto, server;
-import std.(cgi, json, lib.sqlite3, ini, file, process);
+import models, crypto, server, db, scheduler;
+import std.(cgi, json, ini, file, process, time, thread);
 
-void withPeernewsDb(void delegate(Database) dg) {
-  scope db = new Database "peernews.db";
-  onExit db.close;
-  db.openStatementList();
-  onExit db.finStatementList();
-  db.exec("pragma foreign_keys=on");
-  dg(db);
+void withPeernewsDb(void delegate() dg) {
+  scope new_db = new Database "peernews.db";
+  onExit new_db.close;
+  new_db.openStatementList();
+  onExit new_db.finStatementList();
+  new_db.exec("pragma foreign_keys=on");
+  db = new_db;
+  dg();
+  db = null;
 }
 
 struct SaveResponse {
@@ -24,16 +26,26 @@ ConfigFile getIdentFile() {
   return identfile;
 }
 
-Identity getOwnIdentity(Database db) {
+Identity getOwnIdentity() {
   auto identfile = getIdentFile();
   auto pk = identfile.getKey("identity.public-key");
   auto nick = identfile.getKey("identity.nickname");
   if (!int i <- db.exec("select 1 from identity where pk=?", pk)) {
     auto ident = new Identity(pk => pk, nick => nick);
-    ident.save(db);
+    ident.save();
+    // self-consciousness, self-trust to the tune of "1"
+    auto peer = new Peer(ident, 0);
+    peer.save();
     return ident;
   }
-  return new Identity(db, pk);
+  return new Identity(pk);
+}
+
+SignatureCrypto getOwnSCrypto() {
+  auto identfile = getIdentFile();
+  auto pk = identfile.getKey("identity.public-key");
+  auto sk = identfile.getKey("identity.secret-key");
+  return new SignatureCrypto(pk, sk);
 }
 
 void writeReplyDlg(Post parent) using cgi {
@@ -45,7 +57,7 @@ void writeReplyDlg(Post parent) using cgi {
       .type("hidden").class("post_pk")
       .value(parent.poster.pk);
     input
-      .type("hidden").class("post_time")
+      .type("hidden").class("post_date")
       .value(parent.created);
     textarea.class("text").rows(4).cols(50);
     br;
@@ -59,14 +71,29 @@ void writeReplyDlg(Post parent) using cgi {
   }
 }
 
-void renderComment(Database db, Post post) using cgi {
+void renderComment(Post post) using cgi {
+  auto post_id = post.id;
+  int own_vote = post.rate_self();
+  int vote = post.rate();
+  
+  string upvote_class = "upvote";
+  string downvote_class = "downvote";
+  if (own_vote > 0) upvote_class = "upvote selected";
+  if (own_vote < 0) downvote_class = "downvote selected";
+  
   div.class("comment").style("margin-left: 10pt; border: 1px solid rgb(128,128,128); ") \{
     table \{
-      tr \{
+      tr.class("commentwrapper") \{
         td \{
-          table \{
-            tr td b.class "upvote" "▲";
-            tr td b.class "downvote" "▼";
+          table.class("votewrapper") \{
+            tr td span
+              .class(upvote_class)
+              .onclick("upvoteFor(this, $post_id);")
+               "▲";
+            tr td span
+              .class(downvote_class)
+              .onclick("downvoteFor(this, $post_id);")
+              "▼";
           }
         }
         td \{
@@ -74,14 +101,14 @@ void renderComment(Database db, Post post) using cgi {
             tr td \{
               b post.poster.nick;
               send " ";
-              float vote = post.rate(db);
               import c.math;
               int as_int = lrintf truncf vote;
-              small "$as_int points t ago";
+              small.class("pointvalue") "$as_int";
+              small " points t ago";
             }
             tr td \{
-              // TODO hoedown
-              send readback("/usr/bin/hoedown", ["--escape"], post._body.data);
+              // TODO library
+              send readback("/usr/bin/hoedown", ["--escape"], post.content);
             }
             tr td small b \{
               span.onclick "openReplyDlgFor($(post.id));" "reply";
@@ -92,22 +119,154 @@ void renderComment(Database db, Post post) using cgi {
       tr td.colspan(2) \{
         div.class("children") \{
           writeReplyDlg(post);
-          for auto child <- post.children renderComment (db, child);
+          for auto child <- post.children renderComment(child);
         }
       }
     }
   }
 }
 
+void updateMyRating(Post post, int rating) {
+  auto rating_db = new Rating;
+  rating_db.post = post;
+  rating_db.rater = getOwnIdentity();
+  rating_db.rating = rating;
+  rating_db.sign(getOwnSCrypto());
+  rating_db.save();
+}
+
+void updateMyRating(string pk, date, int rating) {
+  withPeernewsDb λ {
+    auto post = new Post(pk, date);
+    updateMyRating(post, rating);
+  }
+}
+
 void route() using cgi {
+  void json_error(string msg) {
+    header(500, "application/json");
+    SaveResponse resp;
+    resp.success = false;
+    resp.message = "Error: $msg";
+    send json_pack resp;
+  }
+  // TODO only accept from local addresses
+  if (path == "/peernews.js") {
+    header(200, "application/javascript");
+    send string: readAll "peernews.js";
+    return;
+  }
+  if (path == "/peernews.css") {
+    header(200, "text/css");
+    send string: readAll "peernews.css";
+    return;
+  }
+  if (path == "/schedstats") {
+    header(200, "text/html");
+    send "<!DOCTYPE html>";
+    html \{
+      head title "Scheduler Stats";
+      body \{
+        if (!scheduler) {
+          h2 "Scheduler not initialized.";
+          return;
+        }
+        using LockedMutex:scheduler.lock {
+          h2 "State: $(scheduler.state)";
+          ul \{
+            for auto task <- scheduler.tasks if task {
+              li \{
+                auto now = µsec();
+                auto δt = task.when - now;
+                if (δt < 0) δt = 0;
+                p "In $(int:(δt / 1_000_000)) seconds:";
+                p "\"$(task.info)\"";
+              }
+            }
+          }
+        }
+      }
+    }
+    return;
+  }
+  if (path == "/vote") {
+    if (cgi.method != "POST") {
+      header(405, "text/html");
+      send "<!DOCTYPE html>";
+      html \{
+        head title "Method not allowed";
+        body \{
+          h2 "Method Not Allowed";
+          p "You tried to use GET to register a vote.";
+          p "Please use POST instead, as is required by REST for Good And Right Reasons.";
+        }
+      }
+      return;
+    }
+    string post_pk = cgi.getArg("post_pk");
+    if (post_pk == "") return json_error "Poster PK not provided.";
+    string post_date = cgi.getArg("post_date");
+    if (post_date == "") return json_error "Post date not provided.";
+    string rating = cgi.getArg("rating");
+    if (rating == "") return json_error "Rating not provided.";
+    import std.string;
+    updateMyRating(post_pk, post_date, rating.atoi());
+    header(200, "application/json");
+    SaveResponse resp;
+    resp.success = true;
+    resp.message = "Vote saved.";
+    send json_pack resp;
+    return;
+  }
+  if (path == "/query-post") {
+    string post_pk = cgi.getArg("post_pk");
+    if (post_pk == "") return json_error "Poster PK not provided.";
+    string post_date = cgi.getArg("post_date");
+    if (post_date == "") return json_error "Post date not provided.";
+    struct NetPost {
+      string pk;
+      string created;
+      string parentsign;
+      string content;
+      string signature; // [parentsign/]created/content
+      int rating;
+      string rate_signature; // signature/rating
+      int edits;
+    }
+    NetPost[auto~] posts;
+    withPeernewsDb λ {
+      auto me = getOwnIdentity();
+      auto myCrypto = getOwnSCrypto();
+      void recurse(Post post) {
+        auto rating = new Rating;
+        rating.(post, rating, rater)
+          = (post, post.rate(), me);
+        rating.sign(myCrypto);
+        
+        NetPost npost;
+        npost.(
+          pk, created, parentsign, signature,
+          content, edits, rating, rate_signature
+        ) = post.(
+          poster.pk, created, parent?.signature, signature,
+          content, edits, rating.rating, rating.signature
+        );
+        posts ~= npost;
+        for auto child <- post.children recurse child;
+      }
+      auto post = new Post(post_pk, post_date);
+      post.findParent();
+      recurse(post);
+    }
+    send json_pack posts;
+    return;
+  }
   if (path == "/save") {
     if (cgi.method != "POST") {
       header(405, "text/html");
       send "<!DOCTYPE html>";
       html \{
-        head \{
-          title "Header not allowed";
-        }
+        head title "Method not allowed";
         body \{
           h2 "Method Not Allowed";
           p "You tried to use GET to save a comment.";
@@ -116,36 +275,36 @@ void route() using cgi {
       }
       return;
     }
-    header(200, "application/json");
-    void error(string msg) {
-      SaveResponse resp;
-      resp.success = false;
-      resp.message = "Error: $msg";
-      send json_pack resp;
-    }
     string pk = cgi.getArg("parent_pk");
-    if (pk == "") return error "Parent PK not provided.";
-    string dt = cgi.getArg("parent_time");
-    if (dt == "") return error "Parent post date not provided.";
+    if (pk == "") return json_error "Parent PK not provided.";
+    string dt = cgi.getArg("parent_date");
+    if (dt == "") return json_error "Parent post date not provided.";
     string text = cgi.getArg("text");
-    if (text == "") return error "Comment text not provided.";
+    if (text == "") return json_error "Comment text not provided.";
+    header(200, "application/json");
     SaveResponse resp;
-    withPeernewsDb λ(Database db) {
-      auto parent = new Identity(db, pk);
-      auto parentpost = new Post(db, poster => parent, created => dt, parentpost => null);
+    Post newpost;
+    withPeernewsDb λ {
+      auto parent = new Identity(pk);
+      auto parentpost = new Post(poster => parent, created => dt, parentpost => null);
+      parentpost.findParent();
       
-      auto content = new Content text;
-      content.save(db);
+      assert(string created <- db.exec("select datetime('now')"));
       
-      auto newpost = new Post;
-      newpost.poster = getOwnIdentity(db);
-      newpost._body = content;
+      auto scrypto = getOwnSCrypto();
+      
+      newpost = new Post;
+      newpost.poster = getOwnIdentity();
       newpost.parent = parentpost;
-      newpost.save(db);
+      newpost.created = created.dup;
+      newpost.content = text;
+      newpost.sign(scrypto);
+      newpost.save();
+      updateMyRating(newpost, 1);
       char[auto~] html;
       using scoped send = λ(string s) { html ~= s; } {
         using scoped std.cgi.outputfn = cgi.send {
-          renderComment(db, newpost);
+          renderComment(newpost);
         }
       }
       resp.html = html[];
@@ -163,6 +322,7 @@ void route() using cgi {
         title "Test Page";
         send "<meta charset=\"UTF-8\" />";
         script.src("https://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js");
+        link.rel("stylesheet").href("peernews.css");
       }
       body \{
         h5 \{
@@ -177,63 +337,49 @@ void route() using cgi {
           fail "Identity not found!";
         }
         p "Hi, '$(nick)'!";
-        script.type "text/javascript" \{
-          send `
-function openReplyDlgFor(id) {
-  $("#reply_dlg_"+id).show();
-}
-function closeReplyDlgFor(id) {
-  $("#reply_dlg_"+id).hide();
-}
-function saveReplyFor(id) {
-  var form = $("#reply_dlg_"+id);
-  form.find(".replymsg").html("Saving.");
-  $.post("save", {
-      text: form.find(".text").val(),
-      parent_pk: form.find(".post_pk").val(),
-      parent_time: form.find(".post_time").val(),
-    }, null, "json"
-  ).done(function(data) {
-    if (data.success) {
-      closeReplyDlgFor(id);
-      $(data.html).insertAfter(form);
-    } else {
-      form.find(".replymsg").html(data.message);
-    }
-  }).fail(function(xhr, textStatus, errorThrown) {
-    form.find(".replymsg").html("An error has occurred: "+textStatus+", "+errorThrown+" '"+xhr.responseText+"'");
-  });
-}
-          `;
-        }
-        withPeernewsDb λ(Database db) {
+        script.src("peernews.js");
+        withPeernewsDb λ {
           if (!int i <- db.exec("select 1 from toplevelpost")) {
-            auto dfl_content = new Content("Hello World From Peernews!");
-            dfl_content.save(db);
+            assert(string created <- db.exec("select datetime('now')"));
             auto dfl_post = new TopLevelPost;
             dfl_post.title = "Hello World Default Post";
             dfl_post.post = new Post;
-            dfl_post.post.poster = getOwnIdentity(db);
-            dfl_post.post._body = dfl_content;
-            dfl_post.post.save(db);
-            dfl_post.save(db);
+            dfl_post.post.created = created.dup;
+            dfl_post.post.poster = getOwnIdentity();
+            dfl_post.post.content = "Hello World From Peernews!";
+            dfl_post.post.sign(getOwnSCrypto());
+            dfl_post.post.save();
+            dfl_post.save();
             p "Created default post!";
           }
-          assert long id <- db.exec("select id from toplevelpost limit 1");
-          auto dfl_post = new TopLevelPost(db, id);
+          assert long toplevel_id <- db.exec("select id from toplevelpost limit 1");
+          auto dfl_post = new TopLevelPost(toplevel_id);
+          auto post_id = dfl_post.post.id;
+          
+          int own_vote = dfl_post.post.rate_self();
+          
+          string upvote_class = "upvote";
+          string downvote_class = "downvote";
+          if (own_vote > 0) upvote_class = "upvote selected";
+          if (own_vote < 0) downvote_class = "downvote selected";
+          
           div \{
             table \{
               tr \{
                 td \{
-                  table \{
-                    tr td b.class "upvote" "▲";
+                  table.class("votewrapper commentwrapper") \{
+                    tr td span
+                      .class(upvote_class)
+                      .onclick("upvoteFor(this, $post_id);")
+                      "▲";
                     tr td \{
-                      float vote = dfl_post.post.rate(db);
-                      import c.math;
-                      int as_int = lrintf truncf vote;
-                      send "$as_int";
+                      int vote = dfl_post.post.rate();
+                      span.class("pointvalue") "$vote";
                     }
-                    tr td b.class "downvote" "▼";
+                    tr td span
+                      .class(downvote_class)
+                      .onclick("downvoteFor(this, $post_id);")
+                      "▼";
                   }
                 }
                 td \{
@@ -248,8 +394,7 @@ function saveReplyFor(id) {
                     tr td small "submitted t ago by $(dfl_post.post.poster.nick)";
                     tr td small b \{
                       send "n comments ";
-                      auto id = dfl_post.post.id;
-                      span.onclick "openReplyDlgFor($id);" "reply";
+                      span.onclick "openReplyDlgFor($post_id);" "reply";
                     }
                   }
                 }
@@ -258,7 +403,7 @@ function saveReplyFor(id) {
           }
           hr;
           writeReplyDlg(dfl_post.post);
-          for auto child <- dfl_post.post.children renderComment (db, child);
+          for auto child <- dfl_post.post.children renderComment (child);
         }
       }
     }
@@ -281,6 +426,23 @@ function saveReplyFor(id) {
 }
 
 void main() {
+  {
+    auto write = writefile("modules.dot");
+    using scoped writeln_graph = λ(string s) { write ubyte[]:s; }
+      dumpModuleGraph(false, true);
+    write.close;
+  }
+  
+  scheduler = new Scheduler;
+  auto tp = new ThreadPool 2;
+  tp.addTask new λ{ scheduler.run(); }
+  tp.addTask new λ{
+    sleep(10);
+    scheduler.add(30, "Hello World", λ{
+    });
+    sleep(5);
+    scheduler.add(10, "Shorted", λ { });
+  }
   writeln "Starting server...";
   auto server = new Server("0.0.0.0", 8897, λ{ route; });
   writeln "Server running.";

@@ -87,17 +87,9 @@ The listen, believe and trust actions add an identity to the peer list with a gi
 ## DATA STRUCTURE SKETCHES ETC
 
 * TODO rederive from create-peernewsdb.sh
+* THESE ARE OUT OF DATE!!
 
 Identity: Nickname, PubKey
- 
-Content: Hash, Text
-  Text is Markdown
-  Hash includes Identity and DatePosted from PlainPost.
-  This table exists so that we can (semi-)cheaply store many people's thread states.
- 
-PlainPost: Identity, DatePosted, PlainPost as Parent, Hash in Content
- 
-Hash(PlainPost) = Hash.
  
 RatedPost: PlainPost, VoteMedian, VoteControversy
  

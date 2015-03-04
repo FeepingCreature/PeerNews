@@ -27,116 +27,214 @@ class Identity {
     this.nick = nick;
     this.address = address;
   }
-  void init(Database db, long id) {
+  void init(long id) {
     this.id = id;
     assert (pk, nick, address) <- db.exec("
       select pk, nick, address
       from identity
       where id=?", id);
+    pk = pk.dup;
+    nick = nick.dup;
+    address = address.dup;
   }
-  void init(Database db, string pk) {
+  void init(string pk) {
     this.pk = pk;
     assert (id, nick, address) <- db.exec("
       select id, nick, address
       from identity
       where pk=?", pk);
+    nick = nick.dup;
+    address = address.dup;
   }
-  void save(Database db) {
+  void save() {
     // sqlite3 y u no insert returning :(
     db.exec("insert or replace into identity (pk, nick) values(?, ?)", pk, nick);
     assert id <- db.exec("select id from identity where pk = ?", pk);
   }
 }
 
-class Content {
-  long id;
-  string hash, data;
-  void init(string data) {
-    this.data = data;
-    this.hash = crypto.hash ubyte[]: data;
-  }
-  void init(Database db, string hash) {
-    this.hash = hash;
-    assert (id, data) <- db.exec("select id, data from content where hash = ?", hash);
-  }
-  void save(Database db) {
-    db.exec("insert or ignore into content (hash, data) values(?, ?)", hash, data);
-    assert id <- db.exec("select id from content where hash = ?", hash);
-  }
-}
-
 class Post {
   long id;
   Identity poster;
-  Content _body;
+  string content, signature;
   Post parent;
   Post[] children;
   string created; // sqlite3 datetime
   bool edits; // does it edit its parent?
   void init() { }
   // TODO memoize
-  void init(Database db, long id) {
+  void init(long id) {
     this.id = id;
     assert (long ident, long parent_id, string created) <- db.exec("
       select identity.id, parent, created from post
       inner join identity on post.poster = identity.id
       where post.id = ?", id);
     Post parent;
-    if (parent) parent = new Post(db, parent_id);
-    init(db, new Identity(db, ident), parent, created.dup);
+    if (parent) parent = new Post(parent_id);
+    init(new Identity(ident), parent, created.dup);
   }
-  float rate(Database db) {
+  void init(string pk, string created) {
+    init(new Identity(pk), null, created);
+  }
+  void init(Identity poster, Post parentpost, string created) {
+    this.poster = poster;
+    this.parent = parentpost;
+    this.created = created;
+    assert (id, content, signature, edits) <- db.exec("
+      select id, content, signature, edits from post
+      where poster=? and created=?", poster.id, created);
+    content = content.dup;
+    signature = signature.dup;
+    
+    Post[auto~] children;
+    for (long ident, string created) <- db.exec("
+      select poster, created from post
+      where parent=?", id)
+    {
+      children ~= new Post(new Identity(ident), this, created.dup);
+    }
+    this.children = children[];
+  }
+  void sign(SignatureCrypto scrypt) {
+    scope char[auto~] sigbuilder;
+    if (parent) {
+      parent.validate();
+      sigbuilder ~= parent.signature;
+      sigbuilder ~= "/";
+    }
+    sigbuilder ~= created;
+    sigbuilder ~= "/";
+    sigbuilder ~= content;
+    this.signature = scrypt.sign sigbuilder[];
+  }
+  void validate() {
+    if (signature == "") fail "Post failed to validate: no signature found";
+    auto crypto = new SignatureCrypto(poster.pk);
+    scope char[auto~] sigbuilder;
+    if (parent) {
+      sigbuilder ~= parent.signature;
+      sigbuilder ~= "/";
+    }
+    sigbuilder ~= created;
+    sigbuilder ~= "/";
+    sigbuilder ~= content;
+    if (!crypto.verified(sigbuilder[], signature)) {
+      fail("Post failed to validate: wrong signature: '$signature' for '$(sigbuilder[])'");
+    }
+  }
+  int rate() {
     // grab all votes that are relevant to this post
     // from a peer that we trust
     // sum them limited by trust cap
-    assert float res <- db.exec("
-      select sum(min(cap, rating)) as res
+    assert int res <- db.exec("
+      select sum(
+        min(cap, abs(rating)) *
+        case when rating>0 then 1 when rating<0 then -1 else 0 end
+      ) as res
       from (
-        select rating, trust, 1/(1-trust) as cap
+        select rating, 1/(1-trust) as cap
         from rating
         inner join peers on rater_id = peers.id
         where post_id = ?
       )", id);
     return res;
   }
-  void init(Database db, Identity poster, Post parentpost, string created) {
-    this.poster = poster;
-    this.parent = parentpost;
-    this.created = created;
-    string hash;
-    if (parentpost) {
-      assert (id, hash, edits) <- db.exec("
-        select post.id, content.hash, edits from post
-        inner join content on post.body = content.id
-        where poster=? and parent=? and created=?", poster.id, parentpost.id, created);
-    } else {
-      // removed "parent is null" check because
-      // (poster, created) is now sufficient as a nk --feep, 20.2.15
-      assert ((id, hash, edits) <- db.exec("
-        select post.id, content.hash, edits from post
-        inner join content on post.body = content.id
-        where poster=? and created=?", poster.id, created),
-        "no such post: $(poster.id) from $created");
-    }
-    this._body = new Content(db, hash);
-    Post[auto~] children;
-    for (long ident, string created) <- db.exec("
-      select poster, created from post
-      where parent=?", id)
+  int rate_self() {
+    // only grab my own direct vote
+    if (int res <- db.exec("
+      select rating from rating
+      where post_id = ?
+      and rater_id = ?", id, poster.id))
     {
-      children ~= new Post(db, new Identity(db, ident), this, created.dup);
+      return res;
     }
-    this.children = children[];
+    return 0;
   }
-  void save(Database db) {
-    if (parent) {
-      db.exec("insert into post (poster, body, parent, edits) values(?, ?, ?, ?)",
-        poster.id, _body.id, parent.id, edits);
-    } else {
-      db.exec("insert into post (poster, body, parent, edits) values(?, ?, null, ?)",
-        poster.id, _body.id, edits);
+  void findParent() {
+    if (parent) return;
+    if ((string pk, string created) <- db.exec("
+      select identity.pk, parent.created
+      from post self
+      inner join post parent on self.parent = parent.id
+      inner join identity on parent.poster = identity.id
+      where self.id = ?", id))
+    {
+      parent = new Post(pk.dup, created.dup);
     }
-    assert (id, created) <- db.exec("select id, created from post where rowid=last_insert_rowid()");
+  }
+  void save() {
+    if (!created) {
+      fail "Creation time not specified.";
+    }
+    if (parent) {
+      db.exec("insert into post (poster,content,signature,parent,edits,created) values(?,?,?,?,?,?)",
+        poster.id, content, signature, parent.id, edits, created);
+    } else {
+      db.exec("insert into post (poster,content,signature,parent,edits,created) values(?,?,?,null,?,?)",
+        poster.id, content, signature, edits, created);
+    }
+    assert id <- db.exec("select id from post where rowid=last_insert_rowid()");
+  }
+}
+
+class Rating {
+  long id;
+  Identity rater;
+  Post post;
+  int rating;
+  string signature;
+  void init() { }
+  void init(long id) {
+    this.id = id;
+    assert
+      (rating, long rater_id, long post_id)
+      <- db.exec("select rating, rater_id, post_id from rating where id=?", id);
+    rater = new Identity(rater_id);
+    post = new Post(post_id);
+  }
+  void sign(SignatureCrypto scrypt) {
+    scope char[auto~] sigbuilder;
+    assert(!!post.signature);
+    sigbuilder ~= post.signature;
+    sigbuilder ~= "/";
+    sigbuilder ~= scope= "$rating";
+    this.signature = scrypt.sign sigbuilder[];
+  }
+  void validate() {
+    if (signature == "") fail "Rating failed to validate: no signature found";
+    auto crypto = new SignatureCrypto(rater.pk);
+    scope char[auto~] sigbuilder;
+    sigbuilder ~= post.signature;
+    sigbuilder ~= "/";
+    sigbuilder ~= scope= "$rating";
+    if (!crypto.verified(sigbuilder[], signature)) {
+      fail("Rating failed to validate: wrong signature: '$signature' for '$(sigbuilder[])'");
+    }
+  }
+  void save() {
+    db.exec("insert or replace into rating (rater_id,post_id,rating,signature) values(?,?,?,?)",
+      rater.id, post.id, rating, signature);
+    assert id <- db.exec("select id from rating where rowid=last_insert_rowid()");
+  }
+}
+
+class Peer {
+  long id;
+  float trust;
+  Identity ident;
+  void init(Identity ident, float trust) {
+    this.trust = trust;
+    this.ident = ident;
+  }
+  void init(long id) {
+    this.id = id;
+    assert (trust, long peer_id) <- db.exec("select trust, peer_id from peers where id=?", id);
+    ident = new Identity(peer_id);
+  }
+  void save() {
+    db.exec("insert or replace into peers (peer_id, trust) values(?, ?)",
+      ident.id, trust);
+    assert id <- db.exec("select id from peers where rowid=last_insert_rowid()");
   }
 }
 
@@ -145,12 +243,14 @@ class TopLevelPost {
   string title, link;
   Post post;
   void init() { }
-  void init(Database db, long id) {
+  void init(long id) {
     this.id = id;
     assert (title, link) <- db.exec("select title, link from toplevelpost where id=?", id);
-    post = new Post(db, id);
+    title = title.dup;
+    link = link.dup;
+    post = new Post(id);
   }
-  void save(Database db) {
+  void save() {
     assert(post.id != 0);
     if (link) {
       db.exec("insert into toplevelpost (id, title, link) values(?, ?, ?)",
@@ -162,3 +262,4 @@ class TopLevelPost {
     assert id <- db.exec("select id from toplevelpost where rowid=last_insert_rowid()");
   }
 }
+

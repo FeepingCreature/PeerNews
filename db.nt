@@ -2,3 +2,5 @@ module db;
 
 // TODO sqlite4?
 public import std.lib.sqlite3;
+
+Database db;

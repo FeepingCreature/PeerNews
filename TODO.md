@@ -19,6 +19,8 @@ Tasks left:
   * DONE
 * Save the comment to the db.
   * DONE
+* Sign comments with the SK of the default identity.
+  * DONE
 * Echo back the comment on submit. (JQuery partial replace!)
   * DONE
 * Echo it back with sundown^Whoedown.
@@ -27,5 +29,27 @@ Tasks left:
   * DONE
 * (Implement editing?)
 * Implement voting.
+  * click on votes to change color and count
+    * DONE
+  * create api for submitting votes
+    * DONE
+  * ajax post to api
+    * DONE
+  * upvote posts by default
+    * DONE
+  * DONE
+* JSON export.
+  * Output an entire thread as JSON
+  * Output a single post as JSON
+* Task Scheduler
+* Subscription
+  * Subscription Page
+  * Local Subscription
+  * Subscription Timeout?
+  * Subscribe By Replying
+* Scheduled Polls
+* Create Identity Start Page
+* Multiple Posts
+* Front Page
+* Submit Page
 * Public test 0.01
-* Implement JSON export.

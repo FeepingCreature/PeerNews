@@ -14,22 +14,20 @@ create table identity (
   nick text,
   address text
 );
-create table content (
-  id integer primary key not null,
-  hash text unique not null, -- network key
-  data text
-);
 create table post (
   id integer primary key not null,
   poster integer not null,
-  body integer not null,
+  created datetime not null default (datetime('now')), -- utc
+  received datetime not null, -- time received (for incremental updates)
   parent integer,
-  -- utc
-  created datetime not null default (datetime('now')),
+  
+  content text,
+  signature text, -- parent sig/date/content signed by poster pk
+  
   -- an edit is a response to a comment by the same author marked "edit"
   edits integer not null default (0),
+  
   foreign key(poster) references identity(id),
-  foreign key(body) references content(id),
   foreign key(parent) references post(id),
   unique(poster, created) -- network key
 );
@@ -37,7 +35,8 @@ create table rating (
   id integer primary key not null,
   rater_id integer not null,
   post_id integer not null,
-  rating real not null,
+  rating integer not null,
+  signature text not null, -- pk/post signature/rating, checked on receive
   foreign key(rater_id) references identity(id),
   foreign key(post_id) references post(id),
   unique(rater_id, post_id) -- foreign nk (rater nk, post nk)
@@ -46,7 +45,8 @@ create table peers (
   id integer primary key not null,
   peer_id integer not null,
   trust real not null,
-  foreign key(peer_id) references identity(id)
+  foreign key(peer_id) references identity(id),
+  unique(peer_id)
 );
 create table toplevelpost (
   id integer primary key not null,

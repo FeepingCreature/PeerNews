@@ -1,0 +1,67 @@
+module scheduler;
+
+import std.(thread, time, math);
+
+class Scheduler {
+  class Task {
+    type-of µsec() when;
+    string info;
+    void delegate() dg;
+  }
+  Task[auto~] tasks;
+  Mutex lock;
+  std.thread.Condition sleep;
+  string state;
+  void init() {
+    lock = new Mutex;
+    sleep = new std.thread.Condition;
+    state = "Stopped.";
+  }
+  void add(double in_seconds, string info, void delegate() dg) {
+    auto newtask = new Task;
+    newtask.when = µsec() + long:(in_seconds * 1_000_000.0);
+    newtask.info = info;
+    newtask.dg = dg;
+    using LockedMutex:lock {
+      for ref task <- tasks if !task {
+        task = newtask;
+        break;
+      } then tasks ~= newtask;
+    }
+    sleep.signal();
+  }
+  int count() using LockedMutex:lock { return sum [for x <- tasks: !!x]; }
+  void run() using LockedMutex:lock while true {
+    state = "Searching.";
+    auto now = µsec();
+    type-of µsec() wait = -1;
+    bool ranSomething;
+    for (int i = 0; i < tasks.length; ++i) if tasks[i] {
+      ref task = tasks[i];
+      auto delta = task.when - now;
+      if (delta < 0) {
+        auto dg = task.dg;
+        task = null;
+        ranSomething = true;
+        using scoped state = "Running task." {
+          using UnlockedMutex:lock dg();
+        }
+      } else {
+        if (wait == -1) wait = delta;
+        else wait = min(wait, delta);
+      }
+    }
+    if (!ranSomething) {
+      if (wait != -1) {
+        auto sleeps = double:wait / 1_000_000.0;
+        using scoped state = scope= "Sleeping for $(sleeps)s." {
+          sleep.wait(lock, sleeps);
+        }
+      } else {
+        using scoped state = "Sleeping." sleep.wait(lock);
+      }
+    }
+  }
+}
+
+shared Scheduler scheduler;
